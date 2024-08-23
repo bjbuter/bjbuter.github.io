@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OSM Color Tiles</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css">
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+        #map {
+            flex: 1;
+            width: 100vw;
+            height: 100%;
+        }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+	<input type="file" id="gpxFile" accept=".gpx" />
+	<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/togpx/0.3.0/togpx.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet-gpx/1.4.0/gpx.min.js"></script>
+    <script>
+        // Initialize the map centered on Duivendrecht train station
+        var map = L.map('map').setView([52.3262, 4.9405], 14);
+
+        // Add OpenStreetMap tile layer
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+        }).addTo(map);
+		
+		var gpxLayers = []; // Array to keep track of all GPX layers
+		
+		// Handle file upload and add GPX layer to the map
+		document.getElementById('gpxFile').addEventListener('change', function(event) {
+			var file = event.target.files[0];
+			if (file) {
+				var reader = new FileReader();
+				reader.onload = function(e) {
+					var gpxData = e.target.result;
+					var gpxLayer = new L.GPX(gpxData, { 
+						async: true,
+						marker_options: {
+							startIconUrl: 'https://unpkg.com/leaflet@1.7.1/dist/images/marker-icon.png',
+							endIconUrl: 'https://unpkg.com/leaflet@1.7.1/dist/images/marker-icon.png',
+							shadowUrl: 'https://unpkg.com/leaflet@1.7.1/dist/images/marker-shadow.png'
+						}
+					}).on('loaded', function(e) {
+						map.fitBounds(e.target.getBounds());
+						gpxLayers.push(gpxLayer); // Add to the GPX layers array;
+					}).on('addpoint', function(e) {
+						var marker = e.point;
+						attachMarkerClickEvents(marker, gpxLayer); // Attach click events to each marker (start and end)
+					});
+
+					gpxLayer.addTo(map);
+				};
+				reader.readAsText(file);
+			}
+		});
+				
+		var gridLayerGroup = L.layerGroup().addTo(map); // Group to hold the grid boundaries
+		
+		// Call the function to draw grid boundaries
+		drawGridBoundaries(14);
+
+		map.on('zoomend', function() {
+			var zoomLevel = map.getZoom();
+			if (zoomLevel >= 12 && zoomLevel <= 16) {
+				drawGridBoundaries(14); // Force grid boundaries to be drawn at zoom level 14
+			} else {
+				drawGridBoundaries(zoomLevel); // Use the actual zoom level of the map
+			}
+		});
+
+		map.on('moveend', function() {
+			var zoomLevel = map.getZoom();
+			if (zoomLevel >= 12 && zoomLevel <= 16) {
+				drawGridBoundaries(14); // Force grid boundaries to be drawn at zoom level 14
+			} else {
+				drawGridBoundaries(zoomLevel); // Use the actual zoom level of the map
+			}
+		});
+
+        // Color map for easy reference
+        var colorMap = {
+            'green': 'rgba(0, 255, 0, 0.5)', 
+            'red': 'rgba(255, 0, 0, 0.5)', 
+            'blue': 'rgba(0, 0, 255, 0.5)', 
+			'yellow': 'rgba(255, 255, 0, 0.5)',
+            'transparent': 'transparent'
+        };
+        var colors = ['green', 'red', 'transparent']; // Colors to cycle through
+        var coloredTiles = new Map(); // Stores colored tiles
+        var blueRectangles = []; // Array to track blue rectangles
+        var circle = null; // Circle object to be added to the map
+        var maxSize = 0; // Global variable to store the largest square size
+
+        // Function to get the bounds of a tile at zoom level 14
+        function getTileBounds(tileX, tileY, zoom) {
+            var n = Math.pow(2, zoom);
+            var lon_min = tileX / n * 360.0 - 180.0;
+            var lat_min = Math.atan(Math.sinh(Math.PI * (1 - 2 * tileY / n))) * 180.0 / Math.PI;
+            var lon_max = (tileX + 1) / n * 360.0 - 180.0;
+            var lat_max = Math.atan(Math.sinh(Math.PI * (1 - 2 * (tileY + 1) / n))) * 180.0 / Math.PI;
+            return [[lat_min, lon_min], [lat_max, lon_max]];
+        }
+
+        // Function to project latitude and longitude to world coordinates
+        function project(lat, lon, zoom) {
+            var siny = Math.sin(lat * Math.PI / 180);
+            siny = Math.min(Math.max(siny, -0.9999), 0.9999);
+            return {
+                x: 256 * (0.5 + lon / 360) * Math.pow(2, zoom),
+                y: 256 * (0.5 - Math.log((1 + siny) / (1 - siny)) / (4 * Math.PI)) * Math.pow(2, zoom)
+            };
+        }
+
+        // Function to color a tile at a specific latitude and longitude
+        function colorTile(lat, lon) {
+            var zoom = 14;
+            var tileSize = 256;
+
+            var worldCoordinate = project(lat, lon, zoom);
+            var tileX = Math.floor(worldCoordinate.x / tileSize);
+            var tileY = Math.floor(worldCoordinate.y / tileSize);
+
+            var bounds = getTileBounds(tileX, tileY, zoom);
+            var tileKey = `${tileX},${tileY}`;
+
+            // Remove existing rectangle if present
+            if (coloredTiles.has(tileKey)) {
+                var existingTile = coloredTiles.get(tileKey);
+                map.removeLayer(existingTile.rectangle);
+            }
+
+            // Determine the new color
+            var currentColorIndex = (coloredTiles.get(tileKey)?.colorIndex ?? -1) + 1;
+            var newColorName = colors[currentColorIndex % colors.length];
+            var newColor = colorMap[newColorName];
+
+            // Log the contents of coloredTiles
+            //console.log('Colored Tiles:');
+            //coloredTiles.forEach((value, key) => {
+            //    console.log(`Key: ${key}, Color: ${value.colorName}`);
+            //});
+
+            if (newColor === colorMap['transparent']) {
+                console.log('Transparent color selected. Tile will be removed if exists.');
+                coloredTiles.delete(tileKey);
+            } else {
+                var rectangle = L.rectangle(bounds, { color: newColor, weight: 1, fillOpacity: 0.5 }).addTo(map);
+                coloredTiles.set(tileKey, { rectangle: rectangle, colorIndex: currentColorIndex, color: newColor, colorName: newColorName });
+            }
+
+            updateBlueSquare();
+        }
+
+        // Function to compute the maximum possible square size and the best tile for the blue square
+        function getMaxPossibleSquare() {
+            var dp = new Map(); // DP table to store maximum square sizes
+            var localMaxSize = 0; // Local maximum size of the square
+            var bestTile = null; // Best tile position for the largest square
+
+            // Sort tiles by x and y coordinates
+            var sortedKeys = Array.from(coloredTiles.keys()).sort((a, b) => {
+                var [ax, ay] = a.split(',').map(Number);
+                var [bx, by] = b.split(',').map(Number);
+                return ax === bx ? ay - by : ax - bx;
+            });
+
+            sortedKeys.forEach(key => {
+                var tile = coloredTiles.get(key);
+                var [x, y] = key.split(',').map(Number);
+
+                if (tile.colorName === 'red') { // Only consider red tiles
+                    var dpValue = Math.min(
+                        (dp.get(`${x-1},${y}`) || 0),
+                        (dp.get(`${x},${y-1}`) || 0),
+                        (dp.get(`${x-1},${y-1}`) || 0)
+                    ) + 1;
+
+                    dp.set(key, dpValue);
+                    if (dpValue > localMaxSize) {
+                        localMaxSize = dpValue;
+                        bestTile = { tileX: x, tileY: y };
+                    }
+                } else {
+                    dp.set(key, 0);
+                }
+            });
+
+            maxSize = localMaxSize; // Update the global maximum size
+            return { maxSize, bestTile };
+        }
+function computePixelRadius(size) {
+    // Size of each tile in pixels
+    var tileSize = 256;
+    // Compute the diagonal of the square in pixels
+    var diagonalPixels = size * tileSize * Math.sqrt(2);
+    // Radius is half of the diagonal
+    return diagonalPixels / 2;
+}
+
+// Function to convert pixel radius to map coordinates
+function pixelToMapRadius(pixelRadius, zoomLevel) {
+    // Conversion factor from pixels to map units at given zoom level
+    var metersPerPixel = 156543.03392 * Math.cos(0 * Math.PI / 180) / Math.pow(2, zoomLevel);
+    // Convert pixel radius to meters
+    var radiusMeters = pixelRadius * metersPerPixel;
+    return radiusMeters;
+}
+        // Function to update the blue square to be the largest possible square
+        function updateBlueSquare() {
+            // Remove all previous blue rectangles and the circle
+            blueRectangles.forEach(rect => map.removeLayer(rect));
+            blueRectangles = [];
+            if (circle) {
+                map.removeLayer(circle);
+            }
+
+            // Compute the maximum possible square
+            var { maxSize, bestTile } = getMaxPossibleSquare();
+
+            if (bestTile && maxSize > 1) {
+                var { tileX, tileY } = bestTile;
+
+                // Log the coordinates and bounds
+                var topLeft = getTileBounds(tileX - maxSize + 1, tileY - maxSize + 1, 14)[0];
+                var bottomRight = getTileBounds(tileX, tileY, 14)[1];
+                console.log(`Blue Bounds: Top Left (LatLng)=${topLeft}, Bottom Right (LatLng)=${bottomRight}`);
+
+                var topLeftTileCoords = getTileCoordinates(topLeft[0], topLeft[1], 14);
+                var bottomRightTileCoords = getTileCoordinates(bottomRight[0], bottomRight[1], 14);
+                console.log(`Blue Bounds: Top Left (Tile)=${topLeftTileCoords}, Bottom Right (Tile)=${bottomRightTileCoords}`);
+
+                for (var i = 0; i < maxSize; i++) {
+                    for (var j = 0; j < maxSize; j++) {
+                        var key = `${tileX - maxSize + 1 + i},${tileY - maxSize + 1 + j}`;
+                        if (coloredTiles.has(key) && coloredTiles.get(key).colorName === 'red') {
+                            var tileBounds = getTileBounds(tileX - maxSize + 1 + i, tileY - maxSize + 1 + j, 14);
+                            var blueRectangle = L.rectangle(tileBounds, { color: colorMap['blue'], weight: 1, fillOpacity: 0.5 });
+                            blueRectangle.addTo(map);
+                            blueRectangles.push(blueRectangle);
+                        }
+                    }
+                }
+
+                // Compute the center of the blue square
+                var centerX = tileX - (maxSize - 1) / 2;
+                var centerY = tileY - (maxSize - 1) / 2;
+                var centerLatLng = [
+                    (topLeft[0] + bottomRight[0]) / 2,
+                    (topLeft[1] + bottomRight[1]) / 2
+                ];
+
+                // Compute the radius of the circle
+                //var radius = maxSize*Math.sqrt(Math.pow((bottomRightTileCoords.tileX - topLeftTileCoords.tileX + 1) * 256, 2) + Math.pow((bottomRightTileCoords.tileY - topLeftTileCoords.tileY + 1) * 256, 2)) / 2;
+				//var radius = Math.sqrt(2 * Math.pow((maxSize * 256) / 2, 2));
+				// Compute the pixel radius
+				var pixelRadius = computePixelRadius(maxSize);
+
+				// Convert pixel radius to map coordinates (in meters)
+				// 1.638 is my own number 
+				var radiusMeters = pixelToMapRadius(pixelRadius, 14)/1.638;
+
+                circle = L.circle(centerLatLng, { radius: radiusMeters, color: colorMap['yellow'], weight: 1, fillOpacity: 0.3 }).addTo(map);
+
+                console.log(`Blue Square Updated: Center=${centerLatLng}, Radius=${radiusMeters}, Radiuspix=${pixelRadius}`);
+            } else {
+                console.log('No blue square detected.');
+            }
+        }
+
+        // Function to get the tile coordinates given latitude and longitude at zoom level 14
+        function getTileCoordinates(lat, lon, zoom) {
+            var tileSize = 256;
+            var worldCoordinate = project(lat, lon, zoom);
+            return {
+                tileX: Math.floor(worldCoordinate.x / tileSize),
+                tileY: Math.floor(worldCoordinate.y / tileSize)
+            };
+        }
+
+        // Load colored tiles from local storage
+        function loadColoredTiles() {
+            var savedTiles = JSON.parse(localStorage.getItem('coloredTiles') || '[]');
+            savedTiles.forEach(tile => {
+                var { lat, lon, colorIndex, colorName } = tile;
+                var bounds = getTileBounds(tile.tileX, tile.tileY, 14);
+                var rectangle = L.rectangle(bounds, { color: colorMap[colorName], weight: 1, fillOpacity: 0.5 }).addTo(map);
+                coloredTiles.set(`${tile.tileX},${tile.tileY}`, { rectangle: rectangle, colorIndex: colorIndex, color: colorMap[colorName], colorName: colorName });
+            });
+            updateBlueSquare();
+        }
+
+        // Save colored tiles to local storage
+        function saveColoredTiles() {
+            var tilesToSave = [];
+            coloredTiles.forEach((value, key) => {
+                var [tileX, tileY] = key.split(',').map(Number);
+                tilesToSave.push({
+                    tileX: tileX,
+                    tileY: tileY,
+                    colorIndex: value.colorIndex,
+                    colorName: value.colorName
+                });
+            });
+            localStorage.setItem('coloredTiles', JSON.stringify(tilesToSave));
+        }
+		
+		// Function to draw grid boundaries on the map
+		function drawGridBoundaries(zoomLevel) {
+			// Clear the previous grid boundaries
+			gridLayerGroup.clearLayers();
+			var mapBounds = map.getBounds();
+			var tileSize = 256;
+
+			var northWest = project(mapBounds.getNorthWest().lat, mapBounds.getNorthWest().lng, zoomLevel);
+			var southEast = project(mapBounds.getSouthEast().lat, mapBounds.getSouthEast().lng, zoomLevel);
+
+			var startTileX = Math.floor(northWest.x / tileSize);
+			var endTileX = Math.floor(southEast.x / tileSize);
+			var startTileY = Math.floor(northWest.y / tileSize);
+			var endTileY = Math.floor(southEast.y / tileSize);
+
+			for (var x = startTileX; x <= endTileX; x++) {
+				for (var y = startTileY; y <= endTileY; y++) {
+					var bounds = getTileBounds(x, y, zoomLevel);
+					L.rectangle(bounds, { color: 'grey', weight: 1, fillOpacity: 0 }).addTo(gridLayerGroup);
+				}
+			}
+		}
+		
+	
+		// Function to handle map clicks
+		function onMapClick(e) {
+			if (e.originalEvent.ctrlKey) {  // Check for Ctrl+click
+				console.log('Ctrl+click detected');
+
+				// Check if click is near any GPX start or end marker
+				var trackRemoved = false;
+				gpxLayers.forEach((gpxLayer) => {
+					console.log(gpxLayer);
+					gpxLayer.eachLayer(function (layer) {
+						console.log(layer);
+						if (layer instanceof L.Marker && isMarkerNearby(e.latlng, layer)) {
+							map.removeLayer(gpxLayer); // Remove the GPX layer from the map
+							gpxLayers = gpxLayers.filter(layer => layer !== gpxLayer); // Remove from gpxLayers array
+							console.log('GPX track removed');
+							trackRemoved = true; // Indicate that a track was removed
+						}
+					});
+				});
+
+				if (!trackRemoved) {
+					console.log('No GPX track removed.');
+				}
+
+			} else {
+				console.log('Normal click detected');
+				// Handle normal click behavior here
+				colorTile(e.latlng.lat, e.latlng.lng);
+				saveColoredTiles();
+			}
+
+			// Log the click location for demonstration
+			console.log('Lat, Lng:', e.latlng.lat, e.latlng.lng);
+		}
+		
+		// Function to check if the click is near a marker
+		function isMarkerNearby(latlng, marker) {
+			if (!marker) return false;
+			var distance = map.distance(latlng, marker.getLatLng());
+			return distance < 200; // 200 meters tolerance (adjust as needed)
+		}
+		// Function to attach click events to markers
+		function attachMarkerClickEvents(marker, gpxLayer) {
+			marker.on('click', function(e) {
+                map.removeLayer(gpxLayer); // Remove the GPX layer from the map
+                gpxLayers = gpxLayers.filter(layer => layer !== gpxLayer); // Remove from gpxLayers array
+                console.log('GPX track removed');
+			});
+		}
+        // Add click event to color tiles
+        map.on('click', onMapClick);
+
+        // Load tiles from local storage when the page is loaded
+        window.onload = loadColoredTiles;
+    </script>
+</body>
+</html>
