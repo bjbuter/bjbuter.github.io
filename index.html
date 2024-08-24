@@ -16,8 +16,15 @@
         #map {
             flex: 1;
             width: 100vw;
-            height: 100%;
-        }
+            height: calc(100% - 40px); /* Reduce height for input */
+		}
+        #gpxFile {
+            width: 100%;
+            height: 30px; /* Minimal height */
+            padding: 5px; /* Minimal padding */
+            font-size: 14px; /* Small font size */
+            box-sizing: border-box;
+		}
     </style>
 </head>
 <body>
@@ -199,23 +206,23 @@
             maxSize = localMaxSize; // Update the global maximum size
             return { maxSize, bestTile };
         }
-function computePixelRadius(size) {
-    // Size of each tile in pixels
-    var tileSize = 256;
-    // Compute the diagonal of the square in pixels
-    var diagonalPixels = size * tileSize * Math.sqrt(2);
-    // Radius is half of the diagonal
-    return diagonalPixels / 2;
-}
+		function computePixelRadius(size) {
+			// Size of each tile in pixels
+			var tileSize = 256;
+			// Compute the diagonal of the square in pixels
+			var diagonalPixels = size * tileSize * Math.sqrt(2);
+			// Radius is half of the diagonal
+			return diagonalPixels / 2;
+		}
 
-// Function to convert pixel radius to map coordinates
-function pixelToMapRadius(pixelRadius, zoomLevel) {
-    // Conversion factor from pixels to map units at given zoom level
-    var metersPerPixel = 156543.03392 * Math.cos(0 * Math.PI / 180) / Math.pow(2, zoomLevel);
-    // Convert pixel radius to meters
-    var radiusMeters = pixelRadius * metersPerPixel;
-    return radiusMeters;
-}
+		// Function to convert pixel radius to map coordinates
+		function pixelToMapRadius(pixelRadius, zoomLevel) {
+			// Conversion factor from pixels to map units at given zoom level
+			var metersPerPixel = 156543.03392 * Math.cos(0 * Math.PI / 180) / Math.pow(2, zoomLevel);
+			// Convert pixel radius to meters
+			var radiusMeters = pixelRadius * metersPerPixel;
+			return radiusMeters;
+		}
         // Function to update the blue square to be the largest possible square
         function updateBlueSquare() {
             // Remove all previous blue rectangles and the circle
@@ -238,7 +245,6 @@ function pixelToMapRadius(pixelRadius, zoomLevel) {
 
                 var topLeftTileCoords = getTileCoordinates(topLeft[0], topLeft[1], 14);
                 var bottomRightTileCoords = getTileCoordinates(bottomRight[0], bottomRight[1], 14);
-                console.log(`Blue Bounds: Top Left (Tile)=${topLeftTileCoords}, Bottom Right (Tile)=${bottomRightTileCoords}`);
 
                 for (var i = 0; i < maxSize; i++) {
                     for (var j = 0; j < maxSize; j++) {
@@ -260,9 +266,7 @@ function pixelToMapRadius(pixelRadius, zoomLevel) {
                     (topLeft[1] + bottomRight[1]) / 2
                 ];
 
-                // Compute the radius of the circle
-                //var radius = maxSize*Math.sqrt(Math.pow((bottomRightTileCoords.tileX - topLeftTileCoords.tileX + 1) * 256, 2) + Math.pow((bottomRightTileCoords.tileY - topLeftTileCoords.tileY + 1) * 256, 2)) / 2;
-				//var radius = Math.sqrt(2 * Math.pow((maxSize * 256) / 2, 2));
+
 				// Compute the pixel radius
 				var pixelRadius = computePixelRadius(maxSize);
 
@@ -338,51 +342,21 @@ function pixelToMapRadius(pixelRadius, zoomLevel) {
 			}
 		}
 		
-	
 		// Function to handle map clicks
 		function onMapClick(e) {
-			if (e.originalEvent.ctrlKey) {  // Check for Ctrl+click
-				console.log('Ctrl+click detected');
-
-				// Check if click is near any GPX start or end marker
-				var trackRemoved = false;
-				gpxLayers.forEach((gpxLayer) => {
-					console.log(gpxLayer);
-					gpxLayer.eachLayer(function (layer) {
-						console.log(layer);
-						if (layer instanceof L.Marker && isMarkerNearby(e.latlng, layer)) {
-							map.removeLayer(gpxLayer); // Remove the GPX layer from the map
-							gpxLayers = gpxLayers.filter(layer => layer !== gpxLayer); // Remove from gpxLayers array
-							console.log('GPX track removed');
-							trackRemoved = true; // Indicate that a track was removed
-						}
-					});
-				});
-
-				if (!trackRemoved) {
-					console.log('No GPX track removed.');
-				}
-
-			} else {
-				console.log('Normal click detected');
-				// Handle normal click behavior here
-				colorTile(e.latlng.lat, e.latlng.lng);
-				saveColoredTiles();
-			}
-
+			console.log('Normal click detected');
+			// Handle normal click behavior here
+			colorTile(e.latlng.lat, e.latlng.lng);
+			saveColoredTiles();
+		
 			// Log the click location for demonstration
 			console.log('Lat, Lng:', e.latlng.lat, e.latlng.lng);
 		}
 		
-		// Function to check if the click is near a marker
-		function isMarkerNearby(latlng, marker) {
-			if (!marker) return false;
-			var distance = map.distance(latlng, marker.getLatLng());
-			return distance < 200; // 200 meters tolerance (adjust as needed)
-		}
 		// Function to attach click events to markers
 		function attachMarkerClickEvents(marker, gpxLayer) {
 			marker.on('click', function(e) {
+				console.log('GPX marker click detected');
                 map.removeLayer(gpxLayer); // Remove the GPX layer from the map
                 gpxLayers = gpxLayers.filter(layer => layer !== gpxLayer); // Remove from gpxLayers array
                 console.log('GPX track removed');
